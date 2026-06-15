@@ -69,8 +69,45 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    try:
+        listings = load_listings()
+    except Exception:
+        return []
+ 
+    # Step 1: Filter by price
+    if max_price is not None:
+        listings = [item for item in listings if item.get("price", 0) <= max_price]
+ 
+    # Step 2: Filter by size (case-insensitive, partial match to handle "S/M" etc.)
+    if size is not None:
+        size_lower = size.lower()
+        listings = [
+            item for item in listings
+            if size_lower in (item.get("size") or "").lower()
+        ]
+ 
+    # Step 3: Score by keyword overlap with description
+    keywords = set(description.lower().split())
+ 
+    def score(item: dict) -> int:
+        text = " ".join([
+        item.get("title", "") or "",
+        item.get("description", "") or "",
+        item.get("category", "") or "",
+        " ".join(item.get("style_tags", []) or []),
+        item.get("brand", "") or "",
+        ]).lower()
+        return sum(1 for kw in keywords if kw in text)
+ 
+    scored = [(item, score(item)) for item in listings]
+ 
+    # Step 4: Drop zero-score items
+    scored = [(item, s) for item, s in scored if s > 0]
+ 
+    # Step 5: Sort by score, highest first
+    scored.sort(key=lambda x: x[1], reverse=True)
+ 
+    return [item for item, _ in scored]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +137,60 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    try:
+        client = _get_groq_client()
+    except ValueError as e:
+        return f"Could not connect to LLM: {e}"
+ 
+    item_title = new_item.get("title", "this item")
+    item_desc = new_item.get("description", "")
+    item_colors = ", ".join(new_item.get("colors", []))
+    item_style_tags = ", ".join(new_item.get("style_tags", []))
+    item_category = new_item.get("category", "")
+ 
+    item_summary = (
+        f"Item: {item_title}\n"
+        f"Category: {item_category}\n"
+        f"Colors: {item_colors}\n"
+        f"Style tags: {item_style_tags}\n"
+        f"Description: {item_desc}"
+    )
+ 
+    wardrobe_items = wardrobe.get("items", [])
+ 
+    if not wardrobe_items:
+        # Fallback: general styling advice
+        prompt = (
+            f"You are a personal stylist specializing in secondhand fashion.\n\n"
+            f"A user just found this thrifted piece:\n{item_summary}\n\n"
+            f"They have a minimal or empty wardrobe right now. Suggest 1–2 complete outfit "
+            f"ideas using universal wardrobe staples (plain white tee, classic denim, simple sneakers, etc.) "
+            f"that would pair beautifully with this piece. Be specific about silhouettes, layering, and styling tricks."
+        )
+    else:
+        wardrobe_summary = "\n".join(
+            f"- {w.get('name', 'item')}: {w.get('category', '')}, {w.get('color', '')}, "
+            f"style: {w.get('style', '')}"
+            for w in wardrobe_items
+        )
+        prompt = (
+            f"You are a personal stylist specializing in secondhand fashion.\n\n"
+            f"A user just found this thrifted piece:\n{item_summary}\n\n"
+            f"Their current wardrobe includes:\n{wardrobe_summary}\n\n"
+            f"Suggest 1–2 complete outfit combinations using the new piece paired with specific items "
+            f"from their wardrobe. Be specific about silhouettes, layering, tucking, and styling details. "
+            f"Reference wardrobe items by name."
+        )
+ 
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Could not generate outfit suggestion: {e}"
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +222,46 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # Guard against empty/whitespace outfit
+    if not outfit or not outfit.strip():
+        title = new_item.get("title", "this piece")
+        platform = new_item.get("platform", "a thrift app")
+        price = new_item.get("price", "?")
+        return (
+            f"just picked up this {title} on {platform} for ${price} ✨ "
+            f"outfit breakdown coming soon!"
+        )
+ 
+    try:
+        client = _get_groq_client()
+    except ValueError as e:
+        return f"Could not connect to LLM: {e}"
+ 
+    title = new_item.get("title", "thrifted piece")
+    platform = new_item.get("platform", "a thrift app")
+    price = new_item.get("price", "?")
+    colors = ", ".join(new_item.get("colors", []))
+ 
+    prompt = (
+        f"You are writing an authentic, casual Instagram/TikTok OOTD caption.\n\n"
+        f"The thrifted item: {title} from {platform} for ${price}. Colors: {colors}.\n\n"
+        f"The outfit: {outfit}\n\n"
+        f"Write a 2–4 sentence caption that:\n"
+        f"- Sounds like a real person, not a brand (casual tone, lowercase ok, emojis welcome)\n"
+        f"- Mentions the item name, price, and platform exactly once each\n"
+        f"- Captures the specific vibe of the outfit\n"
+        f"- Feels shareable and authentic\n\n"
+        f"Return ONLY the caption, nothing else."
+    )
+ 
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=300,
+            temperature=1.1,  # Higher temp for variety
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Could not generate fit card: {e}"
+ 
